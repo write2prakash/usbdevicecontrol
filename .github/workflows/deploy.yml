@@ -3,6 +3,7 @@ name: Deploy to AWS
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -12,7 +13,13 @@ jobs:
 
       - name: Package deployment files
         run: |
-          tar --exclude='.git' --exclude='.github' --exclude='deploy.tar.gz' -czf deploy.tar.gz .
+          tar \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='*.db' \
+            --exclude='deploy.tar.gz' \
+            -czf deploy.tar.gz .
 
       - name: Upload deployment package to AWS
         uses: appleboy/scp-action@master
@@ -31,21 +38,43 @@ jobs:
           username: ${{ secrets.AWS_USERNAME }}
           key: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
           port: 22
+          envs: JWT_SECRET,SERVER_HOST
+          command_timeout: 20m
           script: |
-            mkdir -p /home/ubuntu/usbdevicecontrol
-            rm -rf /home/ubuntu/usbdevicecontrol/*
-            tar -xzf /home/ubuntu/deploy.tar.gz -C /home/ubuntu/usbdevicecontrol
-            cd /home/ubuntu/usbdevicecontrol
-            if ! command -v docker-compose >/dev/null 2>&1; then
-              echo "docker-compose not found, installing..."
-              sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-              sudo chmod +x /usr/local/bin/docker-compose
+            set -e
+
+            # Install docker compose plugin if missing
+            if ! docker compose version &>/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo apt-get install -y docker-compose-plugin
             fi
-            if command -v docker-compose >/dev/null 2>&1; then
-              DC=docker-compose
-            else
-              DC="docker compose"
-            fi
-            $DC down || true
-            $DC up -d --build
-            echo "Deployment completed successfully!"
+
+            APP_DIR=/home/ubuntu/usbdevicecontrol
+            mkdir -p "$APP_DIR"
+            rm -rf "$APP_DIR"/*
+            tar -xzf /home/ubuntu/deploy.tar.gz -C "$APP_DIR"
+            cd "$APP_DIR"
+
+            # Write env files every deploy so they stay in sync
+            cat > backend/.env << ENVEOF
+            DATABASE_URL=sqlite:///./usb_control.db
+            JWT_SECRET=${JWT_SECRET}
+            BACKEND_CORS_ORIGINS=http://${SERVER_HOST},http://localhost:3000
+            ENVEOF
+
+            cat > frontend/.env.local << ENVEOF
+            NEXT_PUBLIC_API_URL=http://${SERVER_HOST}/api
+            ENVEOF
+
+            # Build and start using prod overrides (strips --reload / npm run dev)
+            NEXT_PUBLIC_API_URL="http://${SERVER_HOST}/api" \
+              sudo docker compose \
+                -f docker-compose.yml \
+                -f docker-compose.prod.yml \
+                up -d --build --remove-orphans
+
+            sudo docker image prune -f
+            echo "Deployment complete!"
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          SERVER_HOST: ${{ secrets.AWS_HOST }}
