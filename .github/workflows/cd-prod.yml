@@ -35,15 +35,15 @@ jobs:
           docker run --rm aquasec/trivy image --exit-code 1 --severity CRITICAL ${{ secrets.ECR_REGISTRY }}/usb-control-backend:${{ github.event.inputs.image_tag }}
           docker run --rm aquasec/trivy image --exit-code 1 --severity CRITICAL ${{ secrets.ECR_REGISTRY }}/usb-control-frontend:${{ github.event.inputs.image_tag }}
       - name: Update prod Helm values
-        run: |
-          python - <<'PY'
-import yaml
-for svc in ["backend","frontend"]:
-    path=f"infra/helm/{svc}/values-prod.yaml"
-    with open(path) as f: data=yaml.safe_load(f)
-    data["image"]["tag"] = "${{ github.event.inputs.image_tag }}"
-    with open(path, "w") as f: yaml.safe_dump(data, f)
-PY
+        env:
+          UPDATE_SCRIPT: |
+            import yaml
+            for svc in ["backend","frontend"]:
+                path=f"infra/helm/{svc}/values-prod.yaml"
+                with open(path) as f: data=yaml.safe_load(f)
+                data["image"]["tag"] = "${{ github.event.inputs.image_tag }}"
+                with open(path, "w") as f: yaml.safe_dump(data, f)
+        run: printf '%s\n' "$UPDATE_SCRIPT" | python3
       - name: Commit Helm values
         run: |
           git config user.name "github-actions"
