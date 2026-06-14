@@ -59,6 +59,23 @@ Go to your GitHub repository settings and add these secrets:
 3. You should see the "Deploy to AWS" workflow running
 4. Check the logs to verify successful deployment
 
+### Optional: AWS instance startup check
+
+Run this on your AWS instance to ensure Docker Compose is installed before deployment:
+
+```bash
+if ! command -v docker-compose >/dev/null 2>&1; then
+  sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+  sudo chmod +x /usr/local/bin/docker-compose
+fi
+```
+
+You can also run the helper script from the repository if you copy it to the instance:
+
+```bash
+bash scripts/install_docker_compose.sh
+```
+
 ## How It Works
 
 When you push code to the `main` branch:
