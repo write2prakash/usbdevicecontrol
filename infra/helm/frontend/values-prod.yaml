@@ -1,0 +1,15 @@
+replicaCount: 3
+image:
+  repository: "your-ecr-registry/usb-control-frontend"
+  tag: "latest"
+  pullPolicy: IfNotPresent
+service:
+  type: ClusterIP
+  port: 3000
+resources:
+  limits:
+    cpu: 1
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi

@@ -1,0 +1,57 @@
+name: CD Prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image semver tag to deploy'
+        required: true
+        type: string
+      confirm:
+        description: 'Type DEPLOY-TO-PROD to confirm production deploy'
+        required: true
+        type: string
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "DEPLOY-TO-PROD" ]; then
+            echo "Confirmation mismatch";
+            exit 1;
+          fi
+      - name: Set up AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - name: Rescan images with Trivy
+        run: |
+          docker pull ${{ secrets.ECR_REGISTRY }}/usb-control-backend:${{ github.event.inputs.image_tag }}
+          docker pull ${{ secrets.ECR_REGISTRY }}/usb-control-frontend:${{ github.event.inputs.image_tag }}
+          docker run --rm aquasec/trivy image --exit-code 1 --severity CRITICAL ${{ secrets.ECR_REGISTRY }}/usb-control-backend:${{ github.event.inputs.image_tag }}
+          docker run --rm aquasec/trivy image --exit-code 1 --severity CRITICAL ${{ secrets.ECR_REGISTRY }}/usb-control-frontend:${{ github.event.inputs.image_tag }}
+      - name: Update prod Helm values
+        run: |
+          python - <<'PY'
+import yaml
+for svc in ["backend","frontend"]:
+    path=f"infra/helm/{svc}/values-prod.yaml"
+    with open(path) as f: data=yaml.safe_load(f)
+    data["image"]["tag"] = "${{ github.event.inputs.image_tag }}"
+    with open(path, "w") as f: yaml.safe_dump(data, f)
+PY
+      - name: Commit Helm values
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add infra/helm/backend/values-prod.yaml infra/helm/frontend/values-prod.yaml
+          git commit -m "cd: promote ${ { github.event.inputs.image_tag } } to prod"
+          git push
+      - name: Notify Slack
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' --data '{"text":"Production deploy triggered for tag ${{ github.event.inputs.image_tag }}"}' ${{ secrets.SLACK_WEBHOOK_URL }}
