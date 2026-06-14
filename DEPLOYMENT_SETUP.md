@@ -50,6 +50,8 @@ Go to your GitHub repository settings and add these secrets:
    - Value: Copy the contents of `$env:TEMP\github_deploy_key` (the private key)
    - **Important:** Keep this secret safe and never share it!
 
+> Note: GitHub no longer allows password authentication for Git operations over HTTPS. Use the SSH key secret here instead of a password.
+
 ### 3. Verify Setup
 
 1. Commit and push a change to your main branch
