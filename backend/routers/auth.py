@@ -76,6 +76,20 @@ def register_superadmin(payload: auth_schemas.SuperAdminRegisterRequest, db: Ses
 
     return user
 
+@router.post("/change-password")
+def change_password(
+    payload: auth_schemas.ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must be at least 8 characters")
+    current_user.password_hash = get_password_hash(payload.new_password)
+    db.commit()
+    return {"detail": "Password changed successfully"}
+
 @router.post("/logout")
 def logout():
     return {"detail": "Logged out"}

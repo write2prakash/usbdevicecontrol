@@ -45,6 +45,15 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  // Change password modal
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [changePwSubmitting, setChangePwSubmitting] = useState(false);
+  const [changePwError, setChangePwError] = useState("");
+  const [changePwSuccess, setChangePwSuccess] = useState(false);
+
   // Per-machine token state
   const [generatingToken, setGeneratingToken] = useState(false);
   const [activeToken, setActiveToken] = useState<string | null>(null);
@@ -226,6 +235,38 @@ Read-Host "Press Enter to exit"
     }
   };
 
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setChangePwError("");
+    if (newPassword !== confirmPassword) {
+      setChangePwError("New passwords do not match.");
+      return;
+    }
+    if (newPassword.length < 8) {
+      setChangePwError("New password must be at least 8 characters.");
+      return;
+    }
+    setChangePwSubmitting(true);
+    try {
+      await apiPost("/auth/change-password", {
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setChangePwSuccess(true);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setTimeout(() => {
+        setShowChangePassword(false);
+        setChangePwSuccess(false);
+      }, 2000);
+    } catch (err: any) {
+      setChangePwError(err?.response?.data?.detail ?? "Failed to change password. Check your current password.");
+    } finally {
+      setChangePwSubmitting(false);
+    }
+  };
+
   const markNotificationRead = async (id: number) => {
     try {
       await apiPost(`/notifications/${id}/read`);
@@ -243,13 +284,22 @@ Read-Host "Press Enter to exit"
       <div className="mx-auto max-w-6xl rounded-3xl bg-white p-8 shadow-lg">
         <div className="flex items-center justify-between gap-4 mb-6">
           <h1 className="text-3xl font-bold">Company Admin</h1>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900 hover:bg-slate-100"
-          >
-            Logout
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => { setShowChangePassword(true); setChangePwError(""); setChangePwSuccess(false); }}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+            >
+              Change Password
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900 hover:bg-slate-100"
+            >
+              Logout
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -504,6 +554,78 @@ Read-Host "Press Enter to exit"
           </div>
         )}
       </div>
+      {/* Change Password Modal */}
+      {showChangePassword && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl">
+            <h2 className="text-xl font-semibold mb-1">Change Password</h2>
+            <p className="text-sm text-slate-500 mb-5">
+              Enter your one-time password and choose a new password.
+            </p>
+
+            {changePwSuccess ? (
+              <div className="rounded-xl bg-green-50 border border-green-200 p-4 text-center">
+                <p className="text-green-700 font-medium">Password changed successfully!</p>
+              </div>
+            ) : (
+              <form onSubmit={handleChangePassword} className="space-y-4">
+                {changePwError && (
+                  <p className="text-sm text-red-600">{changePwError}</p>
+                )}
+                <label className="block">
+                  <span className="text-sm text-slate-700">Current (one-time) password</span>
+                  <input
+                    type="password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    className="mt-1 block w-full rounded-lg border px-3 py-2 text-sm"
+                    required
+                    autoFocus
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm text-slate-700">New password</span>
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="mt-1 block w-full rounded-lg border px-3 py-2 text-sm"
+                    required
+                    minLength={8}
+                    placeholder="Minimum 8 characters"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm text-slate-700">Confirm new password</span>
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="mt-1 block w-full rounded-lg border px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <div className="flex gap-3 pt-1">
+                  <button
+                    type="submit"
+                    disabled={changePwSubmitting}
+                    className="flex-1 rounded-lg bg-slate-900 px-4 py-2 text-sm text-white disabled:opacity-60"
+                  >
+                    {changePwSubmitting ? "Changing..." : "Change Password"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowChangePassword(false)}
+                    className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }

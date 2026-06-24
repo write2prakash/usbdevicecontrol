@@ -25,3 +25,7 @@ class UserResponse(BaseModel):
 
     class Config:
         orm_mode = True
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
