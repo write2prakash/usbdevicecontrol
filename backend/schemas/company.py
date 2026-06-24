@@ -1,3 +1,4 @@
+from typing import Optional
 from pydantic import BaseModel, EmailStr
 
 class CompanyCreate(BaseModel):
@@ -32,3 +33,14 @@ class CompanyCreateResponse(BaseModel):
 
 class CompanyQuotaUpdate(BaseModel):
     max_seats: int
+
+class CompanyUpdate(BaseModel):
+    name: Optional[str] = None
+    domain: Optional[str] = None
+    max_seats: Optional[int] = None
+    is_active: Optional[bool] = None
+
+class CompanyAdminCredentials(BaseModel):
+    admin_name: str
+    admin_email: str
+    temp_password: Optional[str] = None

@@ -90,6 +90,14 @@ export const apiPost = async (path: string, data?: unknown) => {
   return api.post(path, data ?? {});
 };
 
+export const apiPut = async (path: string, data?: unknown) => {
+  return api.put(path, data ?? {});
+};
+
+export const apiDelete = async (path: string) => {
+  return api.delete(path);
+};
+
 export const authMe = async () => {
   const response = await api.get("/auth/me");
   return response.data;
