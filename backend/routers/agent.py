@@ -1,5 +1,7 @@
+import os
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from backend.core.db import get_db
 from backend.core.config import settings
@@ -12,6 +14,18 @@ from backend.models.notification import Notification
 from backend.websocket.manager import manager
 
 router = APIRouter()
+
+AGENT_EXE_PATH = os.environ.get("AGENT_EXE_PATH", "/app/agent-binary/UsbControlAgent.exe")
+
+@router.get("/download")
+def download_agent():
+    if not os.path.exists(AGENT_EXE_PATH):
+        raise HTTPException(status_code=404, detail="Agent binary not yet available on this server")
+    return FileResponse(
+        AGENT_EXE_PATH,
+        media_type="application/octet-stream",
+        filename="UsbControlAgent.exe",
+    )
 
 @router.post("/register", response_model=agent_schemas.AgentRegisterResponse)
 def register_agent(payload: agent_schemas.AgentRegisterRequest, db: Session = Depends(get_db)):
@@ -50,6 +64,7 @@ def register_agent(payload: agent_schemas.AgentRegisterRequest, db: Session = De
         ram=payload.ram,
         mac_address=payload.mac_address,
         ip_address=payload.ip_address,
+        machine_id=payload.machine_id,
         agent_installed=True,
         last_seen=datetime.utcnow(),
     )
@@ -79,7 +94,7 @@ def heartbeat(payload: agent_schemas.AgentHeartbeatRequest, db: Session = Depend
     return {"detail": "Heartbeat received"}
 
 @router.post("/usb-event")
-def usb_event(payload: agent_schemas.AgentUsbEventRequest, db: Session = Depends(get_db)):
+async def usb_event(payload: agent_schemas.AgentUsbEventRequest, db: Session = Depends(get_db)):
     endpoint = db.query(Endpoint).filter(Endpoint.id == payload.endpoint_id).first()
     if not endpoint:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Endpoint not found")
@@ -95,8 +110,23 @@ def usb_event(payload: agent_schemas.AgentUsbEventRequest, db: Session = Depends
         status=USBEventStatus.pending,
     )
     db.add(event)
+    db.flush()
+
+    notif = Notification(
+        company_id=endpoint.company_id,
+        user_id=None,
+        type="usb_event_detected",
+        message=f"USB device '{payload.device_name}' connected to {endpoint.hostname} — awaiting approval",
+    )
+    db.add(notif)
     db.commit()
     db.refresh(event)
+
+    await manager.send_company_json(endpoint.company_id, {
+        "type": "notification",
+        "notification_id": notif.id,
+        "message": notif.message,
+    })
     return {"id": event.id, "status": event.status.value}
 
 @router.get("/usb-event/{event_id}/status", response_model=agent_schemas.AgentUsbEventStatusResponse)
