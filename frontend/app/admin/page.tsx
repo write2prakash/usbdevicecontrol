@@ -156,40 +156,45 @@ export default function AdminPage() {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://52.66.196.47/api";
     const token = activeToken;
 
-    const script = `# USB Control Agent - Installer
+    const script = `# USB Control Agent - Silent Installer
 # Right-click this file and select "Run with PowerShell" (as Administrator)
 # This token is valid for ONE machine only.
 
 $ErrorActionPreference = "Stop"
-$ApiUrl = "${apiUrl}"
-$Token  = "${token}"
+$ApiUrl     = "${apiUrl}"
+$Token      = "${token}"
 $InstallDir = "$env:ProgramFiles\\UsbControlAgent"
+$ExePath    = "$InstallDir\\UsbControlAgent.exe"
+$TaskName   = "UsbControlAgent"
 
-Write-Host ""
-Write-Host "USB Control Agent Installer" -ForegroundColor Cyan
-Write-Host "===========================" -ForegroundColor Cyan
-
+# Auto-elevate to Administrator
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "Restarting as Administrator..." -ForegroundColor Yellow
     Start-Process PowerShell -ArgumentList "-ExecutionPolicy Bypass -File \`"$PSCommandPath\`"" -Verb RunAs
     exit
 }
 
-Write-Host "Creating install directory..." -ForegroundColor Gray
+# Create install directory
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-Write-Host "Downloading agent binary..." -ForegroundColor Gray
-Invoke-WebRequest -Uri "$ApiUrl/agent/download" -OutFile "$InstallDir\\UsbControlAgent.exe" -UseBasicParsing
+# Download agent binary
+Invoke-WebRequest -Uri "$ApiUrl/agent/download" -OutFile $ExePath -UseBasicParsing
 
-Write-Host "Registering and starting agent..." -ForegroundColor Gray
-Start-Process "$InstallDir\\UsbControlAgent.exe" \`
+# Run hidden — registers this machine on first launch
+Start-Process $ExePath \`
     -ArgumentList "--token $Token --api-url $ApiUrl" \`
     -WorkingDirectory $InstallDir \`
-    -WindowStyle Normal
+    -WindowStyle Hidden
 
-Write-Host ""
-Write-Host "Done! This machine is now registered and will appear in the admin dashboard." -ForegroundColor Green
-Read-Host "Press Enter to exit"
+# Register scheduled task so agent starts hidden on every boot (no login needed)
+$action    = New-ScheduledTaskAction -Execute $ExePath -WorkingDirectory $InstallDir
+$trigger   = New-ScheduledTaskTrigger -AtStartup
+$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest -LogonType ServiceAccount
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+
+Write-Host "USB Control Agent installed and running silently." -ForegroundColor Green
+Write-Host "It will start automatically on every boot." -ForegroundColor Green
+Start-Sleep -Seconds 2
 `;
 
     const blob = new Blob([script], { type: "text/plain" });
