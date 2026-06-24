@@ -338,13 +338,21 @@ Read-Host "Press Enter to exit"
 
                     {/* Option B: Manual */}
                     <div className="rounded-xl bg-white border border-slate-200 p-4 space-y-2">
-                      <div className="text-sm font-semibold text-slate-700">Option B — Manual install</div>
+                      <div className="text-sm font-semibold text-slate-700">Option B — Manual (PowerShell)</div>
                       <p className="text-xs text-slate-500">
-                        Copy <code className="bg-slate-100 px-1 rounded">UsbControlAgent.exe</code> to the target machine, then run:
+                        Open PowerShell as Administrator on the target machine and run these two commands:
                       </p>
-                      <code className="block bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono text-slate-700 break-all">
-                        UsbControlAgent.exe --token {activeToken} --api-url {process.env.NEXT_PUBLIC_API_URL ?? "http://52.66.196.47/api"}
-                      </code>
+                      <div className="space-y-1">
+                        <p className="text-xs text-slate-400">1. Download the agent:</p>
+                        <code className="block bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono text-slate-700 break-all">
+                          Invoke-WebRequest "{process.env.NEXT_PUBLIC_API_URL ?? "http://52.66.196.47/api"}/agent/download" -OutFile ".\UsbControlAgent.exe"
+                        </code>
+                        <p className="text-xs text-slate-400 pt-1">2. Register and start the agent:</p>
+                        <code className="block bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono text-slate-700 break-all">
+                          .\UsbControlAgent.exe --token {activeToken} --api-url {process.env.NEXT_PUBLIC_API_URL ?? "http://52.66.196.47/api"}
+                        </code>
+                      </div>
+                      <p className="text-xs text-amber-600">Note: Always use <code className="bg-amber-50 px-1 rounded">.\</code> before the exe name in PowerShell.</p>
                     </div>
                   </div>
 
