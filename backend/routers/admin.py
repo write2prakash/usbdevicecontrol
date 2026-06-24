@@ -38,6 +38,7 @@ def list_endpoints(
             ram=endpoint.ram,
             mac_address=endpoint.mac_address,
             ip_address=endpoint.ip_address,
+            machine_id=endpoint.machine_id,
             agent_installed=endpoint.agent_installed,
             last_seen=endpoint.last_seen.isoformat() if endpoint.last_seen else None,
         )
@@ -96,6 +97,33 @@ def create_install_token_for_endpoint(
     db.add(install_record)
     db.commit()
     return endpoint_schemas.InstallTokenResponse(install_token=token)
+
+@router.post("/endpoints/{endpoint_id}/uninstall")
+async def uninstall_endpoint(
+    endpoint_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_roles(current_user, ["admin"])
+    endpoint = db.query(Endpoint).filter(
+        Endpoint.id == endpoint_id,
+        Endpoint.company_id == current_user.company_id,
+    ).first()
+    if not endpoint:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Endpoint not found")
+
+    # Tell the agent to uninstall itself (best-effort — agent may be offline)
+    try:
+        await manager.send_json(endpoint_id, {"action": "uninstall"})
+    except Exception:
+        pass
+
+    # Remove all related records then the endpoint
+    db.query(USBEvent).filter(USBEvent.endpoint_id == endpoint_id).delete(synchronize_session=False)
+    db.query(AgentInstall).filter(AgentInstall.endpoint_id == endpoint_id).delete(synchronize_session=False)
+    db.delete(endpoint)
+    db.commit()
+    return {"detail": "Uninstall command sent and endpoint removed"}
 
 @router.post("/usb-events/{event_id}/approve")
 async def approve_event(

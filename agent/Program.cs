@@ -87,7 +87,7 @@ var pendingDecisions = new ConcurrentDictionary<int, TaskCompletionSource<string
 
 _ = Task.Run(() => HeartbeatLoop(http, config.EndpointId, cts.Token));
 _ = Task.Run(() => UsbWatcherLoop(http, apiBaseUrl, config.EndpointId, pendingDecisions, isAdmin, cts.Token));
-_ = Task.Run(() => WebSocketLoop(apiBaseUrl, config.EndpointId, pendingDecisions, cts.Token));
+_ = Task.Run(() => WebSocketLoop(apiBaseUrl, config.EndpointId, pendingDecisions, cts, ConfigFile));
 
 Log("Agent running — monitoring USB drives.");
 try { await Task.Delay(Timeout.Infinite, cts.Token); } catch (TaskCanceledException) { }
@@ -203,8 +203,10 @@ static async Task HandleUsbInsertion(
 // ── WebSocket ───────────────────────────────────────────────────────────────────
 static async Task WebSocketLoop(
     string apiBase, int endpointId,
-    ConcurrentDictionary<int, TaskCompletionSource<string>> pending, CancellationToken ct)
+    ConcurrentDictionary<int, TaskCompletionSource<string>> pending,
+    CancellationTokenSource cts, string configFile)
 {
+    var ct = cts.Token;
     while (!ct.IsCancellationRequested)
     {
         using var ws = new ClientWebSocket();
@@ -227,6 +229,14 @@ static async Task WebSocketLoop(
                 {
                     var msg = JsonSerializer.Deserialize<WsMessage>(json,
                         new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                    if (msg?.Action == "uninstall")
+                    {
+                        SelfUninstall(configFile);
+                        cts.Cancel();
+                        return;
+                    }
+
                     if (msg?.EventId is int eid && msg.Status is string st)
                         if (pending.TryRemove(eid, out var tcs))
                             tcs.TrySetResult(st);
@@ -240,6 +250,37 @@ static async Task WebSocketLoop(
         if (!ct.IsCancellationRequested)
             try { await Task.Delay(5000, ct); } catch { break; }
     }
+}
+
+// ── Self-uninstall ───────────────────────────────────────────────────────────────
+static void SelfUninstall(string configFile)
+{
+    try
+    {
+        // Remove scheduled task
+        var rmTask = new System.Diagnostics.ProcessStartInfo("schtasks.exe", "/delete /tn \"UsbControlAgent\" /f")
+        {
+            CreateNoWindow = true, UseShellExecute = false,
+        };
+        using var p = System.Diagnostics.Process.Start(rmTask);
+        p?.WaitForExit(3000);
+    }
+    catch { }
+
+    try { File.Delete(configFile); } catch { }
+
+    // Delete exe after process exits (cmd waits 3s then deletes)
+    try
+    {
+        var exePath = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "UsbControlAgent.exe");
+        var installDir = AppContext.BaseDirectory.TrimEnd('\\', '/');
+        var batch = $"/c timeout /t 3 /nobreak >nul & del /f /q \"{exePath}\" & rmdir /s /q \"{installDir}\"";
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", batch)
+        {
+            CreateNoWindow = true, UseShellExecute = false,
+        });
+    }
+    catch { }
 }
 
 // ── Drive eject ─────────────────────────────────────────────────────────────────
@@ -421,4 +462,5 @@ class WsMessage
 {
     [JsonPropertyName("event_id")] public int?    EventId { get; set; }
     [JsonPropertyName("status")]   public string? Status  { get; set; }
+    [JsonPropertyName("action")]   public string? Action  { get; set; }
 }

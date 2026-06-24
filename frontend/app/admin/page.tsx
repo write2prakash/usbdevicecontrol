@@ -64,6 +64,10 @@ export default function AdminPage() {
   const [installTokens, setInstallTokens] = useState<Record<number, string>>({});
   const [creatingTokenFor, setCreatingTokenFor] = useState<number | null>(null);
 
+  // Uninstall
+  const [uninstallingEndpoint, setUninstallingEndpoint] = useState<Endpoint | null>(null);
+  const [uninstallSubmitting, setUninstallSubmitting] = useState(false);
+
   const router = useRouter();
 
   const handleLogout = () => {
@@ -237,6 +241,21 @@ Start-Sleep -Seconds 2
       } catch { }
     } catch {
       setError(`Unable to ${action} event. Please refresh and try again.`);
+    }
+  };
+
+  const handleUninstall = async () => {
+    if (!uninstallingEndpoint) return;
+    setUninstallSubmitting(true);
+    try {
+      await apiPost(`/admin/endpoints/${uninstallingEndpoint.id}/uninstall`);
+      setEndpoints((prev) => prev.filter((e) => e.id !== uninstallingEndpoint.id));
+      setUninstallingEndpoint(null);
+    } catch {
+      setError("Failed to uninstall. The endpoint may already be offline.");
+      setUninstallingEndpoint(null);
+    } finally {
+      setUninstallSubmitting(false);
     }
   };
 
@@ -527,6 +546,13 @@ Start-Sleep -Seconds 2
                           >
                             {creatingTokenFor === endpoint.id ? "Generating..." : "Reissue token"}
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => setUninstallingEndpoint(endpoint)}
+                            className="rounded-lg border border-red-300 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50"
+                          >
+                            Uninstall
+                          </button>
                         </div>
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 md:grid-cols-3">
@@ -559,6 +585,41 @@ Start-Sleep -Seconds 2
           </div>
         )}
       </div>
+      {/* Uninstall Confirmation Modal */}
+      {uninstallingEndpoint && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl">
+            <h2 className="text-xl font-semibold mb-2">Uninstall agent</h2>
+            <p className="text-sm text-slate-600 mb-1">
+              This will remotely uninstall the agent from:
+            </p>
+            <p className="text-sm font-semibold text-slate-800 mb-4">
+              {uninstallingEndpoint.hostname} ({uninstallingEndpoint.ip_address ?? "unknown IP"})
+            </p>
+            <p className="text-xs text-slate-500 mb-6">
+              The agent process will stop, the scheduled task will be removed, and the endpoint will be deleted from the dashboard. The machine must be online for the remote uninstall to take effect.
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={handleUninstall}
+                disabled={uninstallSubmitting}
+                className="flex-1 rounded-lg bg-red-600 px-4 py-2 text-sm text-white hover:bg-red-700 disabled:opacity-60"
+              >
+                {uninstallSubmitting ? "Uninstalling..." : "Uninstall"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setUninstallingEndpoint(null)}
+                className="flex-1 rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Change Password Modal */}
       {showChangePassword && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
