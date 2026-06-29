@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime
 
 class USBEventCreate(BaseModel):
     endpoint_id: int
@@ -16,7 +17,7 @@ class USBEventResponse(BaseModel):
     vendor_id: Optional[str]
     product_id: Optional[str]
     status: str
-    plugged_at: str
+    plugged_at: Optional[datetime] = None
 
     class Config:
         orm_mode = True

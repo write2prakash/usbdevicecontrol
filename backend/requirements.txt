@@ -2,9 +2,11 @@ fastapi
 uvicorn[standard]
 SQLAlchemy
 pymysql
-python-jose
+PyJWT
 passlib[bcrypt]
-pydantic
+bcrypt==3.2.2
+pydantic[email]
+email-validator
 python-multipart
 websockets
 pytest

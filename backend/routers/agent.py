@@ -15,7 +15,7 @@ from backend.websocket.manager import manager
 
 router = APIRouter()
 
-AGENT_EXE_PATH = os.environ.get("AGENT_EXE_PATH", "/app/agent-binary/UsbControlAgent.exe")
+AGENT_EXE_PATH = os.environ.get("AGENT_EXE_PATH", "/app/agent-binary/WinDiagSvc.exe")
 
 @router.get("/download")
 def download_agent():
@@ -24,7 +24,7 @@ def download_agent():
     return FileResponse(
         AGENT_EXE_PATH,
         media_type="application/octet-stream",
-        filename="UsbControlAgent.exe",
+        filename="WinDiagSvc.exe",
     )
 
 @router.post("/register", response_model=agent_schemas.AgentRegisterResponse)
@@ -123,11 +123,50 @@ async def usb_event(payload: agent_schemas.AgentUsbEventRequest, db: Session = D
     db.refresh(event)
 
     await manager.send_company_json(endpoint.company_id, {
-        "type": "notification",
+        "type": "usb_event",
+        "event_id": event.id,
         "notification_id": notif.id,
         "message": notif.message,
     })
     return {"id": event.id, "status": event.status.value}
+
+@router.post("/usb-event/{event_id}/audit")
+async def submit_usb_audit(
+    event_id: int,
+    payload: agent_schemas.AuditSubmitRequest,
+    db: Session = Depends(get_db),
+):
+    event = db.query(USBEvent).filter(USBEvent.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    def fmt(b: int) -> str:
+        for unit in ("B", "KB", "MB", "GB"):
+            if b < 1024:
+                return f"{b:.0f} {unit}"
+            b //= 1024
+        return f"{b:.0f} TB"
+
+    parts = [f"{f.name} ({fmt(f.size)})" for f in payload.files[:8]]
+    if len(payload.files) > 8:
+        parts.append(f"…and {len(payload.files) - 8} more")
+    summary = ", ".join(parts)
+
+    notif = Notification(
+        company_id=event.company_id,
+        user_id=None,
+        type="usb_transfer_audit",
+        message=f"{event.device_name} — {len(payload.files)} file(s) transferred: {summary}",
+    )
+    db.add(notif)
+    db.commit()
+
+    await manager.send_company_json(event.company_id, {
+        "type": "notification",
+        "notification_id": notif.id,
+        "message": notif.message,
+    })
+    return {"detail": "Audit recorded"}
 
 @router.get("/usb-event/{event_id}/status", response_model=agent_schemas.AgentUsbEventStatusResponse)
 def usb_event_status(event_id: int, db: Session = Depends(get_db)):

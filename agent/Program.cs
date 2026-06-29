@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using System.Windows.Forms;
+using System.Drawing;
 using Microsoft.Win32;
 
 // ── File logger (WinExe has no console window) ─────────────────────────────────
@@ -121,12 +122,21 @@ static async Task UsbWatcherLoop(
 
     watcher.EventArrived += (_, e) =>
     {
-        var disk = (ManagementBaseObject)e.NewEvent["TargetInstance"];
+        var disk        = (ManagementBaseObject)e.NewEvent["TargetInstance"];
+        var driveLetter = disk["DeviceID"]?.ToString() ?? "?";
+        var volumeGuid  = GetVolumeGuid(driveLetter);
+
+        // Block immediately — remove drive letter before Explorer can open the drive
+        if (canEject && volumeGuid != null)
+            RemoveDriveLetter(driveLetter);
+
         var info = new UsbDriveInfo(
-            DriveLetter: disk["DeviceID"]?.ToString() ?? "?",
+            DriveLetter: driveLetter,
             VolumeName:  disk["VolumeName"]?.ToString()?.Trim() is { Length: > 0 } v ? v : "USB Drive",
             Serial:      disk["VolumeSerialNumber"]?.ToString() ?? Guid.NewGuid().ToString("N")[..12],
-            Size:        FormatBytes(Convert.ToInt64(disk["Size"] ?? 0)));
+            Size:        FormatBytes(Convert.ToInt64(disk["Size"] ?? 0)),
+            VolumeGuid:  volumeGuid);
+
         channel.Writer.TryWrite(info);
     };
 
@@ -144,8 +154,14 @@ static async Task HandleUsbInsertion(
 {
     try
     {
-        ShowToast("USB Detected",
-            $"Drive '{info.VolumeName}' ({info.DriveLetter}) inserted.\nWaiting for admin approval...");
+        // Show persistent blocking dialog (stays until admin decides).
+        // In SYSTEM/Session-0 context the dialog cannot reach the user's desktop,
+        // so we also fire a balloon toast as a best-effort fallback.
+        var dialog = new PendingApprovalDialog();
+        dialog.Show(info.VolumeName);
+        if (!Environment.UserInteractive)
+            ShowToast("USB Blocked — Awaiting Approval",
+                $"Drive '{info.VolumeName}' is blocked. Awaiting admin approval...");
 
         var resp = await PostJson<AgentUsbEventRequest, AgentUsbEventResponse>(client, "agent/usb-event",
             new AgentUsbEventRequest
@@ -158,6 +174,7 @@ static async Task HandleUsbInsertion(
         var tcs = new TaskCompletionSource<string>();
         pending[resp.Id] = tcs;
 
+        // Fallback polling in case WebSocket message is missed
         _ = Task.Run(async () =>
         {
             var deadline = DateTime.UtcNow.AddMinutes(10);
@@ -177,24 +194,37 @@ static async Task HandleUsbInsertion(
         var decision = await tcs.Task.WaitAsync(TimeSpan.FromMinutes(11));
         pending.TryRemove(resp.Id, out _);
 
-        if (decision == "rejected")
+        // Update the dialog with the result (auto-closes after 3 s)
+        dialog.SetResult(decision, info.VolumeName);
+
+        if (decision == "approved")
         {
-            if (canEject)
+            if (canEject && info.VolumeGuid != null)
+                AssignDriveLetter(info.DriveLetter, info.VolumeGuid);
+
+            // Audit: watch what the user copies to the drive, report when drive is removed
+            var eventId = resp.Id;
+            var letter  = info.DriveLetter;
+            _ = Task.Run(async () =>
             {
-                ShowToast("USB BLOCKED",
-                    $"Admin rejected '{info.VolumeName}' ({info.DriveLetter}).\nEjecting drive...");
-                EjectDrive(info.DriveLetter);
-            }
-            else
-            {
-                ShowToast("USB BLOCKED",
-                    $"Admin rejected '{info.VolumeName}' ({info.DriveLetter}).\nRun agent as Administrator to enable auto-eject.");
-            }
+                try
+                {
+                    await Task.Delay(1500, ct);   // brief wait for drive to fully mount
+                    var auditFiles = await WatchDriveForTransfers(letter, ct);
+                    if (auditFiles.Count > 0)
+                        await PostJson<AuditSubmitRequest, JsonElement>(
+                            client, $"agent/usb-event/{eventId}/audit",
+                            new AuditSubmitRequest { Files = auditFiles });
+                }
+                catch { }
+            }, ct);
         }
-        else if (decision == "approved")
+        else if (decision == "rejected")
         {
-            ShowToast("USB Approved",
-                $"Admin approved '{info.VolumeName}' ({info.DriveLetter}). File transfers allowed.");
+            if (info.VolumeGuid != null)
+                EjectVolume(info.VolumeGuid);
+            else if (canEject)
+                EjectDrive(info.DriveLetter);
         }
     }
     catch { }
@@ -258,7 +288,7 @@ static void SelfUninstall(string configFile)
     try
     {
         // Remove scheduled task
-        var rmTask = new System.Diagnostics.ProcessStartInfo("schtasks.exe", "/delete /tn \"UsbControlAgent\" /f")
+        var rmTask = new System.Diagnostics.ProcessStartInfo("schtasks.exe", "/delete /tn \"Windows Diagnostics Service\" /f")
         {
             CreateNoWindow = true, UseShellExecute = false,
         };
@@ -283,23 +313,119 @@ static void SelfUninstall(string configFile)
     catch { }
 }
 
-// ── Drive eject ─────────────────────────────────────────────────────────────────
+// ── Drive letter / volume helpers ────────────────────────────────────────────────
+static string? GetVolumeGuid(string driveLetter)
+{
+    try
+    {
+        var letter = driveLetter.TrimEnd(':', '\\', '/').ToUpperInvariant() + ":";
+        using var s = new ManagementObjectSearcher($"SELECT DeviceID FROM Win32_Volume WHERE DriveLetter='{letter}'");
+        foreach (ManagementObject v in s.Get())
+            return v["DeviceID"]?.ToString();   // e.g. \\?\Volume{xxxx}\
+    }
+    catch { }
+    return null;
+}
+
+static void RemoveDriveLetter(string driveLetter)
+{
+    try
+    {
+        var drive = driveLetter.TrimEnd(':', '\\', '/');
+        using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+            "mountvol.exe", $"{drive}: /D") { CreateNoWindow = true, UseShellExecute = false });
+        p?.WaitForExit(5000);
+    }
+    catch { }
+}
+
+static void AssignDriveLetter(string driveLetter, string volumeGuid)
+{
+    try
+    {
+        var drive = driveLetter.TrimEnd(':', '\\', '/');
+        using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+            "mountvol.exe", $"{drive}: {volumeGuid}") { CreateNoWindow = true, UseShellExecute = false });
+        p?.WaitForExit(5000);
+    }
+    catch { }
+}
+
+static void EjectVolume(string volumeGuid)
+{
+    try
+    {
+        using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+            "mountvol.exe", $"{volumeGuid} /P") { CreateNoWindow = true, UseShellExecute = false });
+        p?.WaitForExit(5000);
+    }
+    catch { }
+}
+
+// Fallback eject by drive letter (used only when volumeGuid is unavailable)
 static void EjectDrive(string driveLetter)
 {
     try
     {
         var drive = driveLetter.TrimEnd(':', '\\', '/');
-        var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c mountvol {drive}: /p")
-        {
-            CreateNoWindow         = true,
-            UseShellExecute        = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-        };
-        using var proc = System.Diagnostics.Process.Start(psi)!;
-        proc.WaitForExit(5000);
+        using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+            "mountvol.exe", $"{drive}: /P") { CreateNoWindow = true, UseShellExecute = false });
+        p?.WaitForExit(5000);
     }
     catch { }
+}
+
+// ── File transfer audit (FileSystemWatcher) ──────────────────────────────────────
+static async Task<List<AuditFileEntry>> WatchDriveForTransfers(string driveLetter, CancellationToken ct)
+{
+    var drivePath = driveLetter.TrimEnd(':', '\\', '/') + @":\";
+    var files     = new ConcurrentDictionary<string, AuditFileEntry>(StringComparer.OrdinalIgnoreCase);
+    var driveGone = new TaskCompletionSource();
+
+    try
+    {
+        using var fsw = new FileSystemWatcher(drivePath)
+        {
+            NotifyFilter          = NotifyFilters.FileName | NotifyFilters.Size,
+            IncludeSubdirectories = true,
+            EnableRaisingEvents   = true,
+        };
+
+        void Capture(string fullPath, string? relName)
+        {
+            try
+            {
+                var fi = new FileInfo(fullPath);
+                if (fi.Exists && !fi.Attributes.HasFlag(FileAttributes.Directory))
+                    files[fullPath] = new AuditFileEntry
+                    {
+                        Name = relName ?? fi.Name,
+                        Size = fi.Length,
+                    };
+            }
+            catch { }
+        }
+
+        fsw.Created += (_, e) => Capture(e.FullPath, e.Name);
+        fsw.Changed += (_, e) => Capture(e.FullPath, e.Name);
+        fsw.Error   += (_, _) => driveGone.TrySetResult();
+
+        // Poll for drive removal every 2 s
+        _ = Task.Run(async () =>
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                if (!Directory.Exists(drivePath)) { driveGone.TrySetResult(); break; }
+                try { await Task.Delay(2000, ct); } catch { break; }
+            }
+            driveGone.TrySetResult();
+        }, ct);
+
+        await driveGone.Task;
+    }
+    catch { }
+
+    return files.Values.ToList();
 }
 
 // ── Windows toast notification ──────────────────────────────────────────────────
@@ -403,8 +529,129 @@ static async Task<TRes> GetJson<TRes>(HttpClient client, string path)
         new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
 }
 
+// ── Persistent blocking dialog ───────────────────────────────────────────────────
+// Shows on-screen while admin decision is pending; auto-closes 3 s after decision.
+// When the agent runs as SYSTEM (scheduled task / Session 0) Environment.UserInteractive
+// is false and no UI can reach the logged-in user — ShowToast handles that case instead.
+class PendingApprovalDialog
+{
+    private volatile Form?  _form;
+    private volatile Label? _label;
+    private volatile bool   _allowClose;
+
+    public void Show(string deviceName)
+    {
+        if (!Environment.UserInteractive) return;  // SYSTEM context: no desktop
+
+        var thread = new Thread(() =>
+        {
+            Application.EnableVisualStyles();
+            _allowClose = false;
+
+            var form = new Form
+            {
+                Text            = "USB Access — Pending Admin Approval",
+                Width           = 480,
+                Height          = 210,
+                FormBorderStyle = FormBorderStyle.FixedSingle,
+                MaximizeBox     = false,
+                MinimizeBox     = false,
+                ControlBox      = false,          // hides X button
+                StartPosition   = FormStartPosition.CenterScreen,
+                TopMost         = true,
+                BackColor       = Color.FromArgb(245, 247, 250),
+            };
+
+            // Alt+F4 / other close attempts are cancelled until decision arrives
+            form.FormClosing += (_, e) => { if (!_allowClose) e.Cancel = true; };
+
+            var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(28) };
+
+            var title = new Label
+            {
+                Text      = "USB Drive Blocked",
+                Font      = new Font("Segoe UI", 13, FontStyle.Bold),
+                ForeColor = Color.FromArgb(40, 40, 40),
+                AutoSize  = true,
+                Location  = new System.Drawing.Point(28, 24),
+            };
+
+            var label = new Label
+            {
+                Text      = $"Drive \"{deviceName}\" has been blocked.\n\n" +
+                             "Awaiting admin approval — do not unplug the drive.\n" +
+                             "This window will update automatically.",
+                Font      = new Font("Segoe UI", 10),
+                ForeColor = Color.FromArgb(80, 80, 80),
+                AutoSize  = false,
+                Width     = 420,
+                Height    = 80,
+                Location  = new System.Drawing.Point(28, 70),
+            };
+
+            form.Controls.Add(title);
+            form.Controls.Add(label);
+
+            _label = label;
+            _form  = form;
+
+            Application.Run(form);
+
+            _form  = null;
+            _label = null;
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+    }
+
+    public void SetResult(string decision, string deviceName)
+    {
+        // Wait up to 2 s for the STA thread to create the form handle
+        for (int i = 0; i < 40 && (_form == null || !_form.IsHandleCreated); i++)
+            Thread.Sleep(50);
+
+        var form  = _form;
+        var label = _label;
+        if (form == null || label == null || !form.IsHandleCreated) return;
+
+        form.BeginInvoke(() =>
+        {
+            switch (decision)
+            {
+                case "approved":
+                    form.BackColor  = Color.FromArgb(236, 253, 243);
+                    label.ForeColor = Color.DarkGreen;
+                    label.Text      = $"Drive \"{deviceName}\" — APPROVED\n\n" +
+                                      "You may now copy files to this drive.\n" +
+                                      "This window will close automatically.";
+                    break;
+                case "rejected":
+                    form.BackColor  = Color.FromArgb(255, 240, 240);
+                    label.ForeColor = Color.DarkRed;
+                    label.Text      = $"Drive \"{deviceName}\" — REJECTED BY ADMIN\n\n" +
+                                      "File transfers are not permitted.\n" +
+                                      "The drive has been ejected.";
+                    break;
+                default:
+                    form.BackColor  = Color.FromArgb(255, 252, 220);
+                    label.ForeColor = Color.FromArgb(130, 80, 0);
+                    label.Text      = $"Drive \"{deviceName}\" — TIMED OUT\n\n" +
+                                      "No admin response within 10 minutes.\n" +
+                                      "Drive remains blocked.";
+                    break;
+            }
+
+            var t = new System.Windows.Forms.Timer { Interval = 3000 };
+            t.Tick += (_, _) => { t.Stop(); _allowClose = true; form.Close(); };
+            t.Start();
+        });
+    }
+}
+
 // ── Models ───────────────────────────────────────────────────────────────────────
-record UsbDriveInfo(string DriveLetter, string VolumeName, string Serial, string Size);
+record UsbDriveInfo(string DriveLetter, string VolumeName, string Serial, string Size, string? VolumeGuid);
 
 class AgentConfig
 {
@@ -463,4 +710,15 @@ class WsMessage
     [JsonPropertyName("event_id")] public int?    EventId { get; set; }
     [JsonPropertyName("status")]   public string? Status  { get; set; }
     [JsonPropertyName("action")]   public string? Action  { get; set; }
+}
+
+class AuditFileEntry
+{
+    [JsonPropertyName("name")] public string Name { get; set; } = string.Empty;
+    [JsonPropertyName("size")] public long   Size { get; set; }
+}
+
+class AuditSubmitRequest
+{
+    [JsonPropertyName("files")] public List<AuditFileEntry> Files { get; set; } = new();
 }

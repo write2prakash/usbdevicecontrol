@@ -9,6 +9,7 @@ class EndpointResponse(BaseModel):
     ram: Optional[str]
     mac_address: Optional[str]
     ip_address: Optional[str]
+    machine_id: Optional[str]
     agent_installed: bool
     last_seen: Optional[str]
 

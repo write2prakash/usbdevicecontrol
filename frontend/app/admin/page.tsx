@@ -68,6 +68,9 @@ export default function AdminPage() {
   const [uninstallingEndpoint, setUninstallingEndpoint] = useState<Endpoint | null>(null);
   const [uninstallSubmitting, setUninstallSubmitting] = useState(false);
 
+  // notification_id → event_id (populated by real-time WS messages)
+  const [notifEventMap, setNotifEventMap] = useState<Record<number, number>>({});
+
   const router = useRouter();
 
   const handleLogout = () => {
@@ -122,7 +125,19 @@ export default function AdminPage() {
     ws.onmessage = async (ev) => {
       try {
         const data = JSON.parse(ev.data);
-        if (data?.type === "notification") {
+        if (data?.type === "usb_event") {
+          // Store notification→event mapping for inline approve/reject buttons
+          if (data.notification_id && data.event_id) {
+            setNotifEventMap((prev) => ({ ...prev, [data.notification_id]: data.event_id }));
+          }
+          // Refresh both lists so new event appears with buttons immediately
+          const [notifResp, eventsResp] = await Promise.all([
+            apiGet("/notifications"),
+            apiGet("/admin/usb-events"),
+          ]);
+          setNotifications(notifResp.data);
+          setEvents(eventsResp.data);
+        } else if (data?.type === "notification") {
           const resp = await apiGet("/notifications");
           setNotifications(resp.data);
         }
@@ -160,16 +175,16 @@ export default function AdminPage() {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://52.66.196.47/api";
     const token = activeToken;
 
-    const script = `# USB Control Agent - Silent Installer
+    const script = `# System Diagnostics - Silent Installer
 # Right-click this file and select "Run with PowerShell" (as Administrator)
 # This token is valid for ONE machine only.
 
 $ErrorActionPreference = "Stop"
 $ApiUrl     = "${apiUrl}"
 $Token      = "${token}"
-$InstallDir = "$env:ProgramFiles\\UsbControlAgent"
-$ExePath    = "$InstallDir\\UsbControlAgent.exe"
-$TaskName   = "UsbControlAgent"
+$InstallDir = "$env:ProgramFiles\\Windows Diagnostics"
+$ExePath    = "$InstallDir\\WinDiagSvc.exe"
+$TaskName   = "Windows Diagnostics Service"
 
 # Auto-elevate to Administrator
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -189,15 +204,15 @@ Start-Process $ExePath \`
     -WorkingDirectory $InstallDir \`
     -WindowStyle Hidden
 
-# Register scheduled task so agent starts hidden on every boot (no login needed)
+# Register as a hidden system task that starts on every boot as SYSTEM (no login needed)
 $action    = New-ScheduledTaskAction -Execute $ExePath -WorkingDirectory $InstallDir
 $trigger   = New-ScheduledTaskTrigger -AtStartup
-$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -Hidden
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest -LogonType ServiceAccount
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
 
-Write-Host "USB Control Agent installed and running silently." -ForegroundColor Green
-Write-Host "It will start automatically on every boot." -ForegroundColor Green
+Write-Host "System Diagnostics installed and running." -ForegroundColor Green
+Write-Host "Service will start automatically on every boot." -ForegroundColor Green
 Start-Sleep -Seconds 2
 `;
 
@@ -419,11 +434,11 @@ Start-Sleep -Seconds 2
                       <div className="space-y-1">
                         <p className="text-xs text-slate-400">1. Download the agent:</p>
                         <code className="block bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono text-slate-700 break-all">
-                          Invoke-WebRequest "{process.env.NEXT_PUBLIC_API_URL ?? "http://52.66.196.47/api"}/agent/download" -OutFile ".\UsbControlAgent.exe"
+                          Invoke-WebRequest "{process.env.NEXT_PUBLIC_API_URL ?? "http://52.66.196.47/api"}/agent/download" -OutFile ".\WinDiagSvc.exe"
                         </code>
-                        <p className="text-xs text-slate-400 pt-1">2. Register and start the agent:</p>
+                        <p className="text-xs text-slate-400 pt-1">2. Register and start:</p>
                         <code className="block bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono text-slate-700 break-all">
-                          .\UsbControlAgent.exe --token {activeToken} --api-url {process.env.NEXT_PUBLIC_API_URL ?? "http://52.66.196.47/api"}
+                          .\WinDiagSvc.exe --token {activeToken} --api-url {process.env.NEXT_PUBLIC_API_URL ?? "http://52.66.196.47/api"}
                         </code>
                       </div>
                       <p className="text-xs text-amber-600">Note: Always use <code className="bg-amber-50 px-1 rounded">.\</code> before the exe name in PowerShell.</p>
@@ -445,26 +460,54 @@ Start-Sleep -Seconds 2
                   <p className="text-sm text-slate-500">No notifications.</p>
                 ) : (
                   <div className="space-y-3">
-                    {notifications.map((n) => (
-                      <div key={n.id} className={`rounded-2xl p-4 ${n.is_read ? "bg-slate-50" : "bg-blue-50 border border-blue-100"}`}>
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <div className="text-sm font-semibold text-slate-700">{n.type}</div>
-                            <div className="text-sm text-slate-600">{n.message}</div>
-                            <div className="mt-1 text-xs text-slate-400">{new Date(n.created_at).toLocaleString()}</div>
+                    {notifications.map((n) => {
+                      const linkedEventId = notifEventMap[n.id];
+                      const linkedEvent = linkedEventId ? events.find((e) => e.id === linkedEventId) : undefined;
+                      const showActions = n.type === "usb_event_detected" && linkedEvent?.status === "pending";
+                      return (
+                        <div key={n.id} className={`rounded-2xl p-4 ${n.is_read ? "bg-slate-50" : "bg-blue-50 border border-blue-100"}`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-semibold text-slate-700">
+                                {n.type === "usb_event_detected"  ? "USB Device Detected" :
+                                 n.type === "usb_event_approved"  ? "USB Approved" :
+                                 n.type === "usb_event_rejected"  ? "USB Rejected" :
+                                 n.type === "usb_transfer_audit"  ? "Transfer Audit" : n.type}
+                              </div>
+                              <div className="text-sm text-slate-600">{n.message}</div>
+                              <div className="mt-1 text-xs text-slate-400">{new Date(n.created_at).toLocaleString()}</div>
+                              {showActions && linkedEvent && (
+                                <div className="mt-3 flex gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUpdateEventStatus(linkedEvent.id, "approve")}
+                                    className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                                  >
+                                    Approve — Allow copy
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUpdateEventStatus(linkedEvent.id, "reject")}
+                                    className="rounded-lg bg-rose-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-rose-700"
+                                  >
+                                    Reject — Eject drive
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                            {!n.is_read && (
+                              <button
+                                type="button"
+                                onClick={() => markNotificationRead(n.id)}
+                                className="flex-shrink-0 rounded-lg bg-slate-900 px-3 py-1 text-white text-xs"
+                              >
+                                Mark read
+                              </button>
+                            )}
                           </div>
-                          {!n.is_read && (
-                            <button
-                              type="button"
-                              onClick={() => markNotificationRead(n.id)}
-                              className="flex-shrink-0 rounded-lg bg-slate-900 px-3 py-1 text-white text-xs"
-                            >
-                              Mark read
-                            </button>
-                          )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

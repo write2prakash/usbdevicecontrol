@@ -12,7 +12,7 @@ from backend.websocket.manager import manager
 
 router = APIRouter()
 
-@router.get("/", response_model=list[notification_schemas.NotificationResponse])
+@router.get("", response_model=list[notification_schemas.NotificationResponse])
 def get_notifications(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

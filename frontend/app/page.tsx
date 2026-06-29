@@ -9,7 +9,7 @@ export default function Home() {
           Multi-tenant SaaS platform for Windows device agents, real-time USB approvals, and tenant management.
         </p>
         <div className="grid gap-4 md:grid-cols-3">
-          <Link className="rounded-xl border border-slate-300 bg-white p-6 shadow-sm hover:shadow-md" href="/(auth)/login">
+          <Link className="rounded-xl border border-slate-300 bg-white p-6 shadow-sm hover:shadow-md" href="/login">
             <h2 className="text-2xl font-semibold">Login</h2>
             <p className="mt-2 text-slate-600">Sign in to access platform dashboards.</p>
           </Link>

@@ -5,7 +5,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>UsbControlAgent</AssemblyName>
+    <AssemblyName>WinDiagSvc</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="System.Management" Version="8.0.0" />
